@@ -4,10 +4,11 @@ import time
 import logging
 import random
 import asyncio
-import aioredis
+import aiopg
 import aiohttp
 import telepot
 import telepot.aio
+from hh_api import HeadHunterAPI, HeadHunterAuthError
 from telepot.aio.loop import MessageLoop
 from telepot.namedtuple import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove, ForceReply
 from telepot.namedtuple import InlineKeyboardMarkup, InlineKeyboardButton
@@ -20,9 +21,6 @@ formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(messag
 ch = logging.StreamHandler()
 ch.setFormatter(formatter)
 log.addHandler(ch)
-
-
-resume_list_url = f'https://api.hh.ru/resumes/mine'
 
 redis = None
 token_pattern = re.compile(r"^[A-Z0-9]{64}$")
