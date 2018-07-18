@@ -1,15 +1,25 @@
 version: '3'
 services:
-  telegram:
+  telegram_bot:
     build: .
-    command: sh -c "python main.py"
+    command: sh -c "python bot/__init__.py"
     depends_on:
-      - redis
+      - postgres
     volumes:
       - .:/app
     environment:
-      BOT_TOKEN: <paste yout bot token here>
-      REDIS_URI: redis
-      REDIS_PORT: 6379
-  redis:
-    image: redis:4-alpine
+      BOT_TOKEN: <paste_your_bot_token_here>
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: hh_update_bot
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+
+  postgres:
+    image: postgres:9.6-alpine
+    environment:
+      POSTGRES_DB: hh_update_bot
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - /srv/docker/postgres:/var/lib/postgresql

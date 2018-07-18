@@ -5,8 +5,11 @@ name = "pypi"
 
 [packages]
 telepot = "*"
-aioredis = "*"
 aiohttp = "*"
+mypy = "*"
+ipython = "*"
+python-dateutil = "*"
+aiopg = "*"
 
 [dev-packages]
 

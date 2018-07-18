@@ -1,15 +1,15 @@
+from typing import Optional, Dict, Any
 import os
 import re
-import time
 import logging
 import random
 import asyncio
-import aiohttp
+import aiopg
 import telepot
 import telepot.aio
+from hh_api import HeadHunterAPI, HeadHunterAuthError
 from telepot.aio.loop import MessageLoop
-from telepot.namedtuple import ReplyKeyboardRemove
-from telepot.namedtuple import InlineKeyboardMarkup, InlineKeyboardButton
+from telepot.namedtuple import ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton
 
 # logging
 log = logging.getLogger('hh-update-bot')
@@ -56,8 +56,7 @@ hello_message = ('Привет! Я регулярно (примерно раз �
                  '4. Скопировать `access_token` (64 символа) и отправить мне.\n\n'
                  )
 token_incorrect_message = 'Неправильный токен. Ты уверен, что скопировал всё правильно?'
-error_getting_resume_list_message = ('Не удалось загрузить список твоих резюме. Одно из двух: либо токен не валиден, '
-                                     'либо нет ни одного резюме. Перепроверь и отправь токен ещё раз, пожалуйста.')
+no_resumes_available_message = 'Нет ни одного резюме! Добавь резюме (а лучше несколько) на hh.ru и попробуй снова.'
 select_resume_message = 'Выбери резюме, которое будем поднимать.'
 resume_selected_message = ('Ок, выбранное резюме будет регулярно обновляться каждые четыре часа в течение одной недели '
                            '(не содержимое, а только дата резюме). Через неделю тебе нужно будет написать мне, '
@@ -69,21 +68,9 @@ async def on_unknown_message(chat_id):
     await bot.sendMessage(chat_id, msg)
 
 
-async def get_resume_list(chat_id, token):
-    headers = {'Authorization': f'Bearer {token}'}
-    async with aiohttp.ClientSession(headers=headers) as session:
-        async with session.get(resume_list_url) as resp:
-            if resp.status != 200:
-                log.info(f'Get resume list: error getting resume, status {resp.status}')
-                return
-            data = await resp.json()
-            log.info(f'Got resume list: chat_id {chat_id}, status {resp.status}')
-            return data['items'] or False
-
-
 async def on_chat_message(msg):
-    content_type, chat_type, chat_id = telepot.glance(msg)
-    log.info(f"Chat: {content_type}, {chat_type}, {chat_id}")
+    content_type, chat_type, user_id = telepot.glance(msg)
+    log.info(f"Chat: {content_type}, {chat_type}, {user_id}")
     log.info(msg)
 
     # answer in private chats only
@@ -92,15 +79,12 @@ async def on_chat_message(msg):
 
     # answer for text messages only
     if content_type != 'text':
-        return await on_unknown_message(chat_id)
-
-    # user key in Redis
-    user_key = f'user:{chat_id}'
+        return await on_unknown_message(user_id)
 
     # check if user is new
-    known_user = await redis.exists(user_key)
-    if known_user:
-        log.info(f'Known user: {chat_id}')
+    user = await get_user(int(user_id))
+    if user:
+        log.info(f'Known user: {user_id}')
 
         token = msg['text'].upper()
         if token_pattern.match(token):
@@ -137,9 +121,8 @@ async def on_chat_message(msg):
             return
     else:
         # unknown user
-        log.info(f'Unknown user: {chat_id}')
-        await bot.sendMessage(chat_id, hello_message, parse_mode='Markdown')
-        await redis.hset(user_key, 'hello', '1')  # mark that user has seen hello message
+        log.info(f'Unknown user: {user_id}')
+        await bot.sendMessage(user_id, hello_message, parse_mode='Markdown')
         return
 
     command = msg['text'].lower()
@@ -154,80 +137,115 @@ async def on_chat_message(msg):
                      [InlineKeyboardButton(text='Callback - edit message', callback_data='edit')],
                      [dict(text='Switch to using bot inline', switch_inline_query='initial query')],
                  ])
-
-        message_with_inline_keyboard = await bot.sendMessage(chat_id, 'Inline keyboard with various buttons', reply_markup=markup)
-    elif command == '/redis':
-        redis_status = await redis.info()
-        markup = ReplyKeyboardRemove()
-        await bot.sendMessage(chat_id, redis_status, reply_markup=markup)
     else:
         await on_unknown_message(chat_id)
 
 
-async def on_callback_query(msg):
-    query_id, chat_id, data = telepot.glance(msg, flavor='callback_query')
-    log.info(f'Callback query: {query_id}, {chat_id}, {data}')
-
-    if data.startswith('select_resume'):
-        r_id = data.split(':')[1]
-        r_key = f'resume:{r_id}'
-        r_title = (await redis.get(r_key)).decode()
-        if not r_title:
-            await bot.answerCallbackQuery(query_id, text='Resume not found!')
-        else:
-            # user key in Redis
-            user_key = f'user:{chat_id}'
-
-            # get message id from Redis
-            message_with_inline_keyboard = int(await redis.hget(user_key, 'message_with_inline_keyboard'))
-            msg_idf = (chat_id, message_with_inline_keyboard)
-            log.info('Callback query: ' + str(msg_idf))
-
-            # update message with inline keyboard
-            await bot.editMessageText(msg_idf, f'👌 Выбрано резюме: {r_title}')
-
-            # del message id from Redis
-            await redis.hdel(user_key, 'message_with_inline_keyboard')
-
-            # save resume id to Redis
-            await redis.hset(user_key, 'resume', r_id)
-            await redis.hset(user_key, 'last_update', 0)
-            update_until = int(time.time()) + 7 * 24 * 60 * 60
-            await redis.hset(user_key, 'update_until', update_until)
-
-            # notify user that resume will be updated
-            await bot.sendMessage(chat_id, resume_selected_message)
-            await bot.sendSticker(chat_id, 'CAADAgADow0AAlOx9wMSX5-GZpBRAAEC')
+async def get_user(user_id: int) -> Optional[Dict[str, Any]]:
+    async with pg_pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT * FROM public.user WHERE user_id = %(user_id)s;
+                """,
+                {'user_id': user_id}
+            )
+            user = await cur.fetchone()
+            if not user:
+                return None
+            return {
+                'user_id': user[0],
+                'hh_token': user[1],
+                'first_name': user[2],
+                'last_name': user[3],
+                'email': user[4],
+                'is_waiting_for_token': user[5]
+            }
 
 
-async def connect_postgres():
+async def postgres_connect() -> None:
     global pg_pool
 
+    log.info("Connecting to PostgreSQL...")
+
     # get environment variables
-    PG_HOST = os.environ['POSTGRES_HOST']
-    PG_PORT = os.environ['POSTGRES_PORT']
-    PG_DB = os.environ['POSTGRES_DB']
-    PG_USER = os.environ['POSTGRES_USER']
-    PG_PASSWORD = os.environ['POSTGRES_PASSWORD']
+    PG_HOST: str = os.environ['POSTGRES_HOST']
+    PG_PORT: str = os.environ['POSTGRES_PORT']
+    PG_DB: str = os.environ['POSTGRES_DB']
+    PG_USER: str = os.environ['POSTGRES_USER']
+    PG_PASSWORD: str = os.environ['POSTGRES_PASSWORD']
 
     # see: https://www.postgresql.org/docs/current/static/libpq-connect.html#LIBPQ-CONNSTRING
-    dsn = f'dbname={PG_DB} user={PG_USER} password={PG_PASSWORD} host={PG_HOST} port={PG_PORT}'
+    dsn: str = f'dbname={PG_DB} user={PG_USER} password={PG_PASSWORD} host={PG_HOST} port={PG_PORT}'
 
-    pg_pool = await aioredis.create_redis(
-        (REDIS_URI, REDIS_PORT), loop=loop)
+    pg_pool = await aiopg.create_pool(dsn)
+
+
+async def postgres_create_tables() -> None:
+    async with pg_pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            log.info("Creating tables...")
+            await cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS public."user"
+                (
+                    user_id bigint NOT NULL,
+                    hh_token "char",
+                    first_name character varying(64) COLLATE pg_catalog."default",
+                    last_name character varying(64) COLLATE pg_catalog."default",
+                    email character varying(64) COLLATE pg_catalog."default",
+                    is_waiting_for_token boolean NOT NULL DEFAULT true,
+                    CONSTRAINT user_pkey PRIMARY KEY (user_id)
+                )
+                WITH (
+                    OIDS = FALSE
+                )
+                TABLESPACE pg_default;
+                
+                ALTER TABLE public."user"
+                    OWNER to postgres;
+    
+    
+    
+                CREATE TABLE IF NOT EXISTS public.resume
+                (
+                    resume_id bigint NOT NULL,
+                    user_id bigint NOT NULL,
+                    title character varying(128) COLLATE pg_catalog."default" NOT NULL,
+                    status "char" NOT NULL,
+                    next_publish_at time with time zone NOT NULL,
+                    access "char" NOT NULL,
+                    CONSTRAINT resume_pkey PRIMARY KEY (resume_id),
+                    CONSTRAINT fk_resume_user_id FOREIGN KEY (user_id)
+                        REFERENCES public."user" (user_id) MATCH SIMPLE
+                        ON UPDATE NO ACTION
+                        ON DELETE CASCADE
+                )
+                WITH (
+                    OIDS = FALSE
+                )
+                TABLESPACE pg_default;
+                
+                ALTER TABLE public.resume
+                    OWNER to postgres;
+                """
+            )
 
 
 if __name__ == '__main__':
     # get environment variables
-    TOKEN = os.environ['BOT_TOKEN']
+    TOKEN: str = os.environ['BOT_TOKEN']
 
-    bot = telepot.aio.Bot(TOKEN)
-    answerer = telepot.aio.helper.Answerer(bot)
+    bot: telepot.aio.Bot = telepot.aio.Bot(TOKEN)
+    answerer: telepot.aio.helper.Answerer = telepot.aio.helper.Answerer(bot)
 
     loop = asyncio.get_event_loop()
-    loop.run_until_complete(connect_postgres())
-    loop.create_task(MessageLoop(bot, {'chat': on_chat_message,
-                                       'callback_query': on_callback_query}).run_forever())
-    log.info('Listening ...')
+
+    loop.run_until_complete(postgres_connect())
+    loop.run_until_complete(postgres_create_tables())
+
+    loop.create_task(MessageLoop(bot, {'chat': on_chat_message}).run_forever())
+
+    log.info('Listening for messages in Telegram...')
 
     loop.run_forever()
