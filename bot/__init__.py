@@ -4,13 +4,11 @@ import time
 import logging
 import random
 import asyncio
-import aiopg
 import aiohttp
 import telepot
 import telepot.aio
-from hh_api import HeadHunterAPI, HeadHunterAuthError
 from telepot.aio.loop import MessageLoop
-from telepot.namedtuple import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove, ForceReply
+from telepot.namedtuple import ReplyKeyboardRemove
 from telepot.namedtuple import InlineKeyboardMarkup, InlineKeyboardButton
 
 # logging
@@ -22,7 +20,7 @@ ch = logging.StreamHandler()
 ch.setFormatter(formatter)
 log.addHandler(ch)
 
-redis = None
+pg_pool = None
 token_pattern = re.compile(r"^[A-Z0-9]{64}$")
 
 
@@ -202,22 +200,32 @@ async def on_callback_query(msg):
             await bot.sendSticker(chat_id, 'CAADAgADow0AAlOx9wMSX5-GZpBRAAEC')
 
 
-async def connect_redis():
-    global redis
-    REDIS_URI = os.environ['REDIS_URI']
-    REDIS_PORT = os.environ['REDIS_PORT']
-    redis = await aioredis.create_redis(
+async def connect_postgres():
+    global pg_pool
+
+    # get environment variables
+    PG_HOST = os.environ['POSTGRES_HOST']
+    PG_PORT = os.environ['POSTGRES_PORT']
+    PG_DB = os.environ['POSTGRES_DB']
+    PG_USER = os.environ['POSTGRES_USER']
+    PG_PASSWORD = os.environ['POSTGRES_PASSWORD']
+
+    # see: https://www.postgresql.org/docs/current/static/libpq-connect.html#LIBPQ-CONNSTRING
+    dsn = f'dbname={PG_DB} user={PG_USER} password={PG_PASSWORD} host={PG_HOST} port={PG_PORT}'
+
+    pg_pool = await aioredis.create_redis(
         (REDIS_URI, REDIS_PORT), loop=loop)
 
 
 if __name__ == '__main__':
+    # get environment variables
     TOKEN = os.environ['BOT_TOKEN']
 
     bot = telepot.aio.Bot(TOKEN)
     answerer = telepot.aio.helper.Answerer(bot)
 
     loop = asyncio.get_event_loop()
-    loop.run_until_complete(connect_redis())
+    loop.run_until_complete(connect_postgres())
     loop.create_task(MessageLoop(bot, {'chat': on_chat_message,
                                        'callback_query': on_callback_query}).run_forever())
     log.info('Listening ...')
