@@ -83,46 +83,48 @@ async def on_chat_message(msg):
 
     # check if user is new
     user = await get_user(int(user_id))
-    if user:
-        log.info(f'Known user: {user_id}')
 
-        token = msg['text'].upper()
-        if token_pattern.match(token):
-            log.info(f'Token for chat {chat_id} matched pattern.')
-            resumes = await get_resume_list(chat_id, token)
-            if resumes:
-                # save token to Redis
-                await redis.hset(user_key, 'token', token)
+    # unknown user
+    if not user:
+        log.info(f'Unknown user: {user_id}')
+        await create_user(int(user_id))
+        await bot.sendMessage(user_id, hello_message, parse_mode='Markdown')
+        return
 
-                # save resumes to Redis
-                for r in resumes:
-                    r_key = 'resume:{id}'.format(id=r['id'])
-                    await redis.set(r_key, r['title'])
+    # known user
+    log.info(f'Known user: {user_id}')
+    token = msg['text'].upper()
+    if token_pattern.match(token):
+        log.info(f'Token for chat {chat_id} matched pattern.')
+        resumes = await get_resume_list(chat_id, token)
+        if resumes:
+            # save token to Redis
+            await redis.hset(user_key, 'token', token)
 
-                # send resume list in inline keyboard
-                buttons = [
-                    [InlineKeyboardButton(text=r['title'], callback_data='select_resume:{0}'.format(r['id']))]
-                    for r in resumes
-                ]
-                markup = InlineKeyboardMarkup(inline_keyboard=buttons)
-                message_with_inline_keyboard = await bot.sendMessage(chat_id, select_resume_message,
-                                                                     reply_markup=markup)
-                # save message ID to Redis
-                await redis.hset(user_key, 'message_with_inline_keyboard', message_with_inline_keyboard['message_id'])
-                return
-            else:
-                # error getting resume list: 403 or empty resume list
-                await bot.sendMessage(chat_id, error_getting_resume_list_message)
-                return
+            # save resumes to Redis
+            for r in resumes:
+                r_key = 'resume:{id}'.format(id=r['id'])
+                await redis.set(r_key, r['title'])
+
+            # send resume list in inline keyboard
+            buttons = [
+                [InlineKeyboardButton(text=r['title'], callback_data='select_resume:{0}'.format(r['id']))]
+                for r in resumes
+            ]
+            markup = InlineKeyboardMarkup(inline_keyboard=buttons)
+            message_with_inline_keyboard = await bot.sendMessage(chat_id, select_resume_message,
+                                                                 reply_markup=markup)
+            # save message ID to Redis
+            await redis.hset(user_key, 'message_with_inline_keyboard', message_with_inline_keyboard['message_id'])
+            return
         else:
-            # token mismatched pattern
-            log.info(f'Token for chat {chat_id} NOT matched pattern: {token}')
-            await bot.sendMessage(chat_id, token_incorrect_message)
+            # error getting resume list: 403 or empty resume list
+            await bot.sendMessage(chat_id, error_getting_resume_list_message)
             return
     else:
-        # unknown user
-        log.info(f'Unknown user: {user_id}')
-        await bot.sendMessage(user_id, hello_message, parse_mode='Markdown')
+        # token mismatched pattern
+        log.info(f'Token for chat {chat_id} NOT matched pattern: {token}')
+        await bot.sendMessage(chat_id, token_incorrect_message)
         return
 
     command = msg['text'].lower()
@@ -144,6 +146,7 @@ async def on_chat_message(msg):
 async def get_user(user_id: int) -> Optional[Dict[str, Any]]:
     async with pg_pool.acquire() as conn:
         async with conn.cursor() as cur:
+            log.info(f'Getting user with id {user_id}...')
             await cur.execute(
                 """
                 SELECT * FROM public.user WHERE user_id = %(user_id)s;
@@ -161,6 +164,18 @@ async def get_user(user_id: int) -> Optional[Dict[str, Any]]:
                 'email': user[4],
                 'is_waiting_for_token': user[5]
             }
+
+
+async def create_user(user_id: int) -> None:
+    async with pg_pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            log.info(f'Creating user with id {user_id}...')
+            await cur.execute(
+                """
+                INSERT INTO public.user (user_id) VALUES (%(user_id)s);
+                """,
+                {'user_id': user_id}
+            )
 
 
 async def postgres_connect() -> None:
