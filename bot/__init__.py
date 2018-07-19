@@ -93,6 +93,28 @@ async def on_chat_message(msg):
 
     # known user
     log.info(f'Known user: {user_id}')
+
+    command = msg['text'].lower()
+
+    if command == '/start':
+        await bot.sendMessage(user_id, hello_message)
+    elif command == '/help':
+        # markup = InlineKeyboardMarkup(inline_keyboard=[
+        #     [dict(text='Telegram URL', url='https://core.telegram.org/')],
+        #     [InlineKeyboardButton(text='Callback - show notification', callback_data='notification')],
+        #     [dict(text='Callback - show alert', callback_data='alert')],
+        #     [InlineKeyboardButton(text='Callback - edit message', callback_data='edit')],
+        #     [dict(text='Switch to using bot inline', switch_inline_query='initial query')],
+        # ])
+        await on_unknown_message(user_id)  # TODO: fix this
+    elif command == '/cancel':
+        # cancel wait for token
+        user['is_waiting_for_token'] = False
+        await update_user(user)
+        await bot.sendMessage(user_id, 'Cancelled.')
+    else:
+        await on_unknown_message(user_id)
+
     token = msg['text'].upper()
     if token_pattern.match(token):
         log.info(f'Token for chat {chat_id} matched pattern.')
@@ -127,21 +149,6 @@ async def on_chat_message(msg):
         await bot.sendMessage(chat_id, token_incorrect_message)
         return
 
-    command = msg['text'].lower()
-
-    if command == '/start':
-        await bot.sendMessage(chat_id, hello_message)
-    elif command == '/help':
-        markup = InlineKeyboardMarkup(inline_keyboard=[
-                     [dict(text='Telegram URL', url='https://core.telegram.org/')],
-                     [InlineKeyboardButton(text='Callback - show notification', callback_data='notification')],
-                     [dict(text='Callback - show alert', callback_data='alert')],
-                     [InlineKeyboardButton(text='Callback - edit message', callback_data='edit')],
-                     [dict(text='Switch to using bot inline', switch_inline_query='initial query')],
-                 ])
-    else:
-        await on_unknown_message(chat_id)
-
 
 async def get_user(user_id: int) -> Optional[Dict[str, Any]]:
     async with pg_pool.acquire() as conn:
@@ -175,6 +182,36 @@ async def create_user(user_id: int) -> None:
                 INSERT INTO public.user (user_id) VALUES (%(user_id)s);
                 """,
                 {'user_id': user_id}
+            )
+
+
+async def update_user(user: Dict[str, Any]) -> None:
+    async with pg_pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            assert 'user_id' in user
+            assert 'hh_token' in user
+            assert 'first_name' in user
+            assert 'last_name' in user
+            assert 'email' in user
+            assert 'is_waiting_for_token' in user
+
+            log.info(f"Updating user with id {user['user_id']}...")
+
+            await cur.execute(
+                """
+                UPDATE
+                    public.user
+                SET
+                    hh_token=%(hh_token)s,
+                    first_name=%(first_name)s,
+                    last_name=%(last_name)s,
+                    email=%(email)s,
+                    is_waiting_for_token=%(is_waiting_for_token)s
+                WHERE user_id=%(user_id)s;
+                """,
+                {
+                    **user
+                }
             )
 
 
