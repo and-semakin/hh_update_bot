@@ -1,4 +1,4 @@
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, List, Any
 import os
 import re
 import logging
@@ -7,9 +7,8 @@ import asyncio
 import aiopg
 import telepot
 import telepot.aio
-from hh_api import HeadHunterAPI, HeadHunterAuthError
+from hh_api import HeadHunterAPI, HeadHunterResume, HeadHunterAuthError
 from telepot.aio.loop import MessageLoop
-from telepot.namedtuple import ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton
 
 # logging
 log = logging.getLogger('hh-update-bot')
@@ -34,9 +33,10 @@ hello_message = ('Привет! Я регулярно (примерно раз �
                  'чтобы его увидело большее количество работодателей. '
                  'И тебе даже не придется платить за это ни рубля! :)\n\n'
                  
-                 '*Важное замечание*\n'
+                 '<b>Важное замечание</b>\n'
                  'Наверняка ребята из hh.ru не обрадуются, что я предоставляю такие услуги бесплатно, '
-                 'ведь они берут за это деньги (см. цены [здесь](https://hh.ru/applicant/resume_service/renewresume)). '
+                 'ведь они берут за это деньги '
+                 '(см. цены <a href="https://hh.ru/applicant/resume_service/renewresume">здесь</a>). '
                  'Поэтому я не могу просто создать "приложение", использующее API hh.ru -- его заблокируют. '
                  'Но при этом hh.ru открыто предоставляет пользователям API и не запрещает писать скрипты для '
                  'любых своих целей, которые не противоречат правилам. Поэтому мне нужен твой авторизационный токен, '
@@ -53,19 +53,33 @@ hello_message = ('Привет! Я регулярно (примерно раз �
                  '1. Авторизоваться на hh.ru;\n'
                  '2. Перейти по ссылке: https://dev.hh.ru/admin;\n'
                  '3. Нажать кнопку "Запросить токен";\n'
-                 '4. Скопировать `access_token` (64 символа) и отправить мне.\n\n'
+                 '4. Скопировать <code>access_token</code> (64 символа) и отправить мне.\n\n'
                  )
+help_message = ('/start -- приветственное сообщение;\n'
+                '/help -- список доступных команд;\n'
+                '/token -- сменить токен для доступа к hh.ru;\n'
+                '/cancel -- отменить ввод токена;\n'
+                '/resumes -- получить список доступных резюме;\n'
+                '/active -- получить список продвигаемых резюме.'
+                )
+new_token_message = ('Отправь мне токен для доступа к hh.ru. Напоминаю, что токен можно взять отсюда: '
+                     'https://dev.hh.ru/admin . Если передумал, то отправь /cancel.')
+new_token_cancel_message = 'Установка нового токена отменена.'
 token_incorrect_message = 'Неправильный токен. Ты уверен, что скопировал всё правильно?'
 no_resumes_available_message = 'Нет ни одного резюме! Добавь резюме (а лучше несколько) на hh.ru и попробуй снова.'
-select_resume_message = 'Выбери резюме, которое будем поднимать.'
-resume_selected_message = ('Ок, выбранное резюме будет регулярно обновляться каждые четыре часа в течение одной недели '
-                           '(не содержимое, а только дата резюме). Через неделю тебе нужно будет написать мне, '
+select_resume_message = 'Выбери одно или несколько резюме, которые будем продвигать в поиске.\n\n'
+resume_selected_message = ('Ок, резюме <b>"{title}"</b> будет регулярно подниматься в поиске каждые четыре часа в '
+                           'течение одной недели. Через неделю тебе нужно будет написать мне, '
                            'чтобы продолжить поднимать резюме. Я предупрежу тебя. Желаю найти работу мечты!')
+
+
+async def send_message(chat_id, message):
+    await bot.sendMessage(chat_id, message, parse_mode='HTML')
 
 
 async def on_unknown_message(chat_id):
     msg = random.choice(incorrect_message_answers)
-    await bot.sendMessage(chat_id, msg)
+    await send_message(chat_id, msg)
 
 
 async def on_chat_message(msg):
@@ -88,7 +102,7 @@ async def on_chat_message(msg):
     if not user:
         log.info(f'Unknown user: {user_id}')
         await create_user(int(user_id))
-        await bot.sendMessage(user_id, hello_message, parse_mode='Markdown')
+        await send_message(user_id, hello_message)
         return
 
     # known user
@@ -97,57 +111,29 @@ async def on_chat_message(msg):
     command = msg['text'].lower()
 
     if command == '/start':
-        await bot.sendMessage(user_id, hello_message)
+        await send_message(user_id, hello_message)
     elif command == '/help':
-        # markup = InlineKeyboardMarkup(inline_keyboard=[
-        #     [dict(text='Telegram URL', url='https://core.telegram.org/')],
-        #     [InlineKeyboardButton(text='Callback - show notification', callback_data='notification')],
-        #     [dict(text='Callback - show alert', callback_data='alert')],
-        #     [InlineKeyboardButton(text='Callback - edit message', callback_data='edit')],
-        #     [dict(text='Switch to using bot inline', switch_inline_query='initial query')],
-        # ])
-        await on_unknown_message(user_id)  # TODO: fix this
+        await send_message(user_id, help_message)
+    elif command == '/token':
+        # wait for token
+        user['is_waiting_for_token'] = True
+        await update_user(user)
+        await send_message(user_id, new_token_message)
     elif command == '/cancel':
-        # cancel wait for token
+        # cancel waiting for token
         user['is_waiting_for_token'] = False
         await update_user(user)
-        await bot.sendMessage(user_id, 'Cancelled.')
+        await send_message(user_id, new_token_cancel_message)
+    elif command == '/resumes':
+        await get_resume_list(user)
+    elif command.startswith('/resume_'):
+        resume_id = command.split('_')[1]
+        await activate_resume(user, resume_id)
+    elif user['is_waiting_for_token']:
+        token = msg['text'].upper()
+        await save_token(user, token)
     else:
         await on_unknown_message(user_id)
-
-    token = msg['text'].upper()
-    if token_pattern.match(token):
-        log.info(f'Token for chat {chat_id} matched pattern.')
-        resumes = await get_resume_list(chat_id, token)
-        if resumes:
-            # save token to Redis
-            await redis.hset(user_key, 'token', token)
-
-            # save resumes to Redis
-            for r in resumes:
-                r_key = 'resume:{id}'.format(id=r['id'])
-                await redis.set(r_key, r['title'])
-
-            # send resume list in inline keyboard
-            buttons = [
-                [InlineKeyboardButton(text=r['title'], callback_data='select_resume:{0}'.format(r['id']))]
-                for r in resumes
-            ]
-            markup = InlineKeyboardMarkup(inline_keyboard=buttons)
-            message_with_inline_keyboard = await bot.sendMessage(chat_id, select_resume_message,
-                                                                 reply_markup=markup)
-            # save message ID to Redis
-            await redis.hset(user_key, 'message_with_inline_keyboard', message_with_inline_keyboard['message_id'])
-            return
-        else:
-            # error getting resume list: 403 or empty resume list
-            await bot.sendMessage(chat_id, error_getting_resume_list_message)
-            return
-    else:
-        # token mismatched pattern
-        log.info(f'Token for chat {chat_id} NOT matched pattern: {token}')
-        await bot.sendMessage(chat_id, token_incorrect_message)
-        return
 
 
 async def get_user(user_id: int) -> Optional[Dict[str, Any]]:
@@ -186,15 +172,15 @@ async def create_user(user_id: int) -> None:
 
 
 async def update_user(user: Dict[str, Any]) -> None:
+    assert 'user_id' in user
+    assert 'hh_token' in user
+    assert 'first_name' in user
+    assert 'last_name' in user
+    assert 'email' in user
+    assert 'is_waiting_for_token' in user
+
     async with pg_pool.acquire() as conn:
         async with conn.cursor() as cur:
-            assert 'user_id' in user
-            assert 'hh_token' in user
-            assert 'first_name' in user
-            assert 'last_name' in user
-            assert 'email' in user
-            assert 'is_waiting_for_token' in user
-
             log.info(f"Updating user with id {user['user_id']}...")
 
             await cur.execute(
@@ -213,6 +199,137 @@ async def update_user(user: Dict[str, Any]) -> None:
                     **user
                 }
             )
+
+
+async def activate_resume(user: Dict[str, Any], resume_id: str) -> None:
+    assert 'user_id' in user
+    assert 'hh_token' in user
+
+    user_id = user['user_id']
+    hh_token = user['hh_token']
+
+    resume: HeadHunterResume
+
+    try:
+        async with await HeadHunterAPI.create(hh_token) as api:
+            resume = await api.get_resume(resume_id)
+    except HeadHunterAuthError:
+        await send_message(user_id, token_incorrect_message)
+
+    await insert_or_update_resume(user, resume)
+    await send_message(user_id, resume_selected_message.format(title=resume.title))
+
+
+async def insert_or_update_resume(user: Dict[str, Any], resume: HeadHunterResume) -> None:
+    assert 'user_id' in user
+    assert resume.id
+    assert resume.title
+    assert resume.next_publish_at
+
+    log.info(f"Insert or update resume: {resume.id}, user: {user['user_id']}")
+
+    async with pg_pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                UPDATE
+                    public.resume
+                SET
+                    user_id=%(user_id)s,
+                    title=%(title)s,
+                    status=%(status)s,
+                    next_publish_at=%(next_publish_at)s,
+                    access=%(access)s,
+                    until=NOW() + interval '1 week',
+                    is_owner_notified=false
+                WHERE resume_id=%(resume_id)s;
+                
+                INSERT INTO
+                    public.resume
+                    (resume_id, user_id, title, status, next_publish_at, access, until, is_owner_notified)
+                    SELECT
+                        %(resume_id)s,
+                        %(user_id)s,
+                        %(title)s,
+                        %(status)s,
+                        %(next_publish_at)s,
+                        %(access)s,
+                        NOW() + interval '1 week',
+                        false
+                    WHERE NOT EXISTS (
+                        SELECT
+                            1
+                        FROM
+                            public.resume
+                        WHERE
+                            resume_id=%(resume_id)s
+                    );
+                """,
+                {
+                    'resume_id': resume.id,
+                    'user_id': user['user_id'],
+                    'title': resume.title,
+                    'status': resume.status,
+                    'next_publish_at': resume.next_publish_at,
+                    'access': resume.access
+                }
+            )
+
+
+async def save_token(user: Dict[str, Any], hh_token: str) -> None:
+    assert 'user_id' in user
+
+    user_id = user['user_id']
+
+    if not token_pattern.match(hh_token):
+        # token mismatched pattern
+        log.info(f'Token for chat {user_id} NOT matched pattern: {hh_token}')
+        await send_message(user_id, token_incorrect_message)
+        return
+
+    log.info(f'Token for chat {user_id} matched pattern.')
+
+    # create API object
+    try:
+        async with await HeadHunterAPI.create(hh_token) as api:
+            # update user object
+            user['hh_token'] = hh_token
+            user['is_waiting_for_token'] = False
+            user['first_name'] = api.first_name
+            user['last_name'] = api.last_name
+            user['email'] = api.email
+            await update_user(user)
+    except HeadHunterAuthError:
+        await send_message(user_id, token_incorrect_message)
+        return
+
+    await get_resume_list(user)
+
+
+async def get_resume_list(user: Dict[str, Any]) -> None:
+    assert 'user_id' in user
+    assert 'hh_token' in user
+
+    user_id = user['user_id']
+    hh_token = user['hh_token']
+
+    log.info(f'Get resume list for user: {user_id}, token: {hh_token}')
+
+    try:
+        async with await HeadHunterAPI.create(hh_token) as api:
+            # get resume list
+            resumes: List[HeadHunterResume] = await api.get_resume_list()
+
+            if resumes:
+                msg = select_resume_message
+                msg += '\n\n'.join(f'<b>{r.title}</b>\n/resume_{r.id}' for r in resumes)
+                await send_message(user_id, msg)
+            else:
+                # no available resumes
+                await send_message(user_id, no_resumes_available_message)
+    except HeadHunterAuthError:
+        await send_message(user_id, token_incorrect_message)
+        return
 
 
 async def postgres_connect() -> None:
@@ -242,7 +359,7 @@ async def postgres_create_tables() -> None:
                 CREATE TABLE IF NOT EXISTS public."user"
                 (
                     user_id bigint NOT NULL,
-                    hh_token "char",
+                    hh_token character varying(64) COLLATE pg_catalog."default",
                     first_name character varying(64) COLLATE pg_catalog."default",
                     last_name character varying(64) COLLATE pg_catalog."default",
                     email character varying(64) COLLATE pg_catalog."default",
@@ -261,12 +378,14 @@ async def postgres_create_tables() -> None:
     
                 CREATE TABLE IF NOT EXISTS public.resume
                 (
-                    resume_id bigint NOT NULL,
+                    resume_id character varying(64) COLLATE pg_catalog."default" NOT NULL,
                     user_id bigint NOT NULL,
                     title character varying(128) COLLATE pg_catalog."default" NOT NULL,
-                    status "char" NOT NULL,
-                    next_publish_at time with time zone NOT NULL,
-                    access "char" NOT NULL,
+                    status character varying(64) COLLATE pg_catalog."default" NOT NULL,
+                    next_publish_at timestamp with time zone NOT NULL,
+                    access character varying(64) COLLATE pg_catalog."default" NOT NULL,
+                    until timestamp with time zone NOT NULL,
+                    is_owner_notified boolean NOT NULL DEFAULT false,
                     CONSTRAINT resume_pkey PRIMARY KEY (resume_id),
                     CONSTRAINT fk_resume_user_id FOREIGN KEY (user_id)
                         REFERENCES public."user" (user_id) MATCH SIMPLE
