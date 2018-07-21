@@ -70,8 +70,19 @@ class HeadHunterAPI:
         api.api_token = api_token
         api.headers = {'Authorization': f'Bearer {api_token}'}
         api.session = ClientSession(headers=api.headers)
-        await api.get_user_data()
+        try:
+            await api.get_user_data()
+        except HeadHunterAuthError:
+            await api.session.close()
+            raise
+
         return api
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc_value, exc_traceback):
+        await self.session.close()
 
     async def get_user_data(self) -> None:
         """Метод, получающий данные о пользователе API.
