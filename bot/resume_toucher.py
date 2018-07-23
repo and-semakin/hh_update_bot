@@ -2,7 +2,7 @@ import os
 import logging
 import asyncio
 import aiopg
-from hh_api import HeadHunterAPI, HeadHunterResume, HeadHunterAuthError, HeadHunterResumeUpdateError
+from .hh_api import HeadHunterAPI, HeadHunterResume, HeadHunterAuthError, HeadHunterResumeUpdateError
 
 # logging
 log = logging.getLogger('hh-update-bot')

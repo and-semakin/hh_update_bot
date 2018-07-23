@@ -7,7 +7,8 @@ import asyncio
 import aiopg
 import telepot
 import telepot.aio
-from hh_api import HeadHunterAPI, HeadHunterResume, HeadHunterAuthError
+from bot.hh_api import HeadHunterAPI, HeadHunterAuthError
+import bot.models
 from telepot.aio.loop import MessageLoop
 
 # logging
@@ -19,6 +20,7 @@ ch = logging.StreamHandler()
 ch.setFormatter(formatter)
 log.addHandler(ch)
 
+tg_bot: telepot.aio.Bot
 pg_pool = None
 token_pattern = re.compile(r"^[A-Z0-9]{64}$")
 
@@ -75,7 +77,7 @@ active_resumes_message = 'Продвигаемые резюме:\n\n'
 
 
 async def send_message(chat_id, message):
-    await bot.sendMessage(chat_id, message, parse_mode='HTML')
+    await tg_bot.sendMessage(chat_id, message, parse_mode='HTML')
 
 
 async def on_unknown_message(chat_id):
@@ -212,7 +214,7 @@ async def activate_resume(user: Dict[str, Any], resume_id: str) -> None:
     user_id = user['user_id']
     hh_token = user['hh_token']
 
-    resume: HeadHunterResume
+    resume: bot.models.HeadHunterResume
 
     try:
         async with await HeadHunterAPI.create(hh_token) as api:
@@ -220,64 +222,11 @@ async def activate_resume(user: Dict[str, Any], resume_id: str) -> None:
     except HeadHunterAuthError:
         await send_message(user_id, token_incorrect_message)
 
-    await insert_or_update_resume(user, resume)
+    # set user_id
+    resume.user_id = user_id
+
+    await resume.activate()
     await send_message(user_id, resume_selected_message.format(title=resume.title))
-
-
-async def insert_or_update_resume(user: Dict[str, Any], resume: HeadHunterResume) -> None:
-    assert 'user_id' in user
-    assert resume.id
-    assert resume.title
-    assert resume.next_publish_at
-
-    log.info(f"Insert or update resume: {resume.id}, user: {user['user_id']}")
-
-    async with pg_pool.acquire() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute(
-                """
-                UPDATE
-                    public.resume
-                SET
-                    user_id=%(user_id)s,
-                    title=%(title)s,
-                    status=%(status)s,
-                    next_publish_at=%(next_publish_at)s,
-                    access=%(access)s,
-                    until=NOW() + interval '1 week',
-                    is_owner_notified=false
-                WHERE resume_id=%(resume_id)s;
-                
-                INSERT INTO
-                    public.resume
-                    (resume_id, user_id, title, status, next_publish_at, access, until, is_owner_notified)
-                    SELECT
-                        %(resume_id)s,
-                        %(user_id)s,
-                        %(title)s,
-                        %(status)s,
-                        %(next_publish_at)s,
-                        %(access)s,
-                        NOW() + interval '1 week',
-                        false
-                    WHERE NOT EXISTS (
-                        SELECT
-                            1
-                        FROM
-                            public.resume
-                        WHERE
-                            resume_id=%(resume_id)s
-                    );
-                """,
-                {
-                    'resume_id': resume.id,
-                    'user_id': user['user_id'],
-                    'title': resume.title,
-                    'status': resume.status,
-                    'next_publish_at': resume.next_publish_at,
-                    'access': resume.access
-                }
-            )
 
 
 async def get_active_resume_list(user: Dict[str, Any]) -> None:
@@ -285,45 +234,12 @@ async def get_active_resume_list(user: Dict[str, Any]) -> None:
 
     user_id = user['user_id']
 
-    active_resumes = await pg_get_active_resume_list(user)
+    active_resumes = await bot.models.HeadHunterResume.get_active_resume_list(user)
 
     msg = active_resumes_message
-    msg += '\n\n'.join(f'<b>{r.title}</b>\n/deactivate_{r.id}' for r in active_resumes)
+    msg += '\n\n'.join(f'<b>{r.title}</b>\n/deactivate_{r.resume_id}' for r in active_resumes)
 
     await send_message(user_id, msg)
-
-
-async def pg_get_active_resume_list(user: Dict[str, Any]) -> List[HeadHunterResume]:
-    assert 'user_id' in user
-
-    async with pg_pool.acquire() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute(
-                """
-                SELECT
-                    resume_id, title, status, next_publish_at, access
-                FROM
-                    public.resume
-                WHERE
-                    user_id=%(user_id)s AND
-                    until > NOW();
-                """,
-                {
-                    'user_id': user['user_id']
-                }
-            )
-
-            resumes = await cur.fetchall()
-            return [
-                HeadHunterResume(
-                    id=r[0],
-                    title=r[1],
-                    status=r[2],
-                    next_publish_at=r[3],
-                    access=r[4]
-                )
-                for r in resumes
-            ]
 
 
 async def save_token(user: Dict[str, Any], hh_token: str) -> None:
@@ -368,11 +284,11 @@ async def get_resume_list(user: Dict[str, Any]) -> None:
     try:
         async with await HeadHunterAPI.create(hh_token) as api:
             # get resume list
-            resumes: List[HeadHunterResume] = await api.get_resume_list()
+            resumes: List[bot.models.HeadHunterResume] = await api.get_resume_list()
 
             if resumes:
                 msg = select_resume_message
-                msg += '\n\n'.join(f'<b>{r.title}</b>\n/resume_{r.id}' for r in resumes)
+                msg += '\n\n'.join(f'<b>{r.title}</b>\n/resume_{r.resume_id}' for r in resumes)
                 await send_message(user_id, msg)
             else:
                 # no available resumes
@@ -403,7 +319,7 @@ async def postgres_connect() -> None:
 async def postgres_create_tables() -> None:
     async with pg_pool.acquire() as conn:
         async with conn.cursor() as cur:
-            log.info("Creating tables...")
+            log.info("Creating table 'public.user'...")
             await cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS public."user"
@@ -423,50 +339,24 @@ async def postgres_create_tables() -> None:
                 
                 ALTER TABLE public."user"
                     OWNER to postgres;
-    
-    
-    
-                CREATE TABLE IF NOT EXISTS public.resume
-                (
-                    resume_id character varying(64) COLLATE pg_catalog."default" NOT NULL,
-                    user_id bigint NOT NULL,
-                    title character varying(128) COLLATE pg_catalog."default" NOT NULL,
-                    status character varying(64) COLLATE pg_catalog."default" NOT NULL,
-                    next_publish_at timestamp with time zone NOT NULL,
-                    access character varying(64) COLLATE pg_catalog."default" NOT NULL,
-                    until timestamp with time zone NOT NULL,
-                    is_owner_notified boolean NOT NULL DEFAULT false,
-                    CONSTRAINT resume_pkey PRIMARY KEY (resume_id),
-                    CONSTRAINT fk_resume_user_id FOREIGN KEY (user_id)
-                        REFERENCES public."user" (user_id) MATCH SIMPLE
-                        ON UPDATE NO ACTION
-                        ON DELETE CASCADE
-                )
-                WITH (
-                    OIDS = FALSE
-                )
-                TABLESPACE pg_default;
-                
-                ALTER TABLE public.resume
-                    OWNER to postgres;
                 """
             )
+    await bot.models.HeadHunterResume.create_table()
 
 
-if __name__ == '__main__':
+async def main():
+    global tg_bot
+
     # get environment variables
     TOKEN: str = os.environ['BOT_TOKEN']
 
-    bot: telepot.aio.Bot = telepot.aio.Bot(TOKEN)
-    answerer: telepot.aio.helper.Answerer = telepot.aio.helper.Answerer(bot)
+    tg_bot = telepot.aio.Bot(TOKEN)
 
     loop = asyncio.get_event_loop()
 
-    loop.run_until_complete(postgres_connect())
-    loop.run_until_complete(postgres_create_tables())
+    await postgres_connect()
+    await postgres_create_tables()
 
-    loop.create_task(MessageLoop(bot, {'chat': on_chat_message}).run_forever())
+    loop.create_task(MessageLoop(tg_bot, {'chat': on_chat_message}).run_forever())
 
     log.info('Listening for messages in Telegram...')
-
-    loop.run_forever()

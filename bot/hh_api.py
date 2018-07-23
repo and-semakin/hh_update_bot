@@ -1,10 +1,9 @@
-from typing import Dict, List, NamedTuple, Tuple
+from typing import Dict, List, Tuple
 from aiohttp.client import ClientSession
-from datetime import datetime
 import dateutil.parser
+import bot.models
 
 APIToken = str
-ResumeID = str
 
 
 class HeadHunterAuthError(Exception):
@@ -22,25 +21,6 @@ class HeadHunterResumeUpdateError(Exception):
     * не заполнены обязательные поля,
     * не отредактированы поля после блокировки модератором,
     * резюме находится на проверке у модератора."""
-
-
-class HeadHunterResume(NamedTuple):
-    """Резюме на hh.ru."""
-
-    id: ResumeID
-    """Идентификатор резюме."""
-
-    title: str
-    """Название резюме."""
-
-    status: str
-    """Статус резюме."""
-
-    next_publish_at: datetime
-    """Время, когда резюме можно будет поднять в поиске в следующий раз."""
-
-    access: str
-    """Доступ к резюме для других пользователей hh.ru."""
 
 
 class HeadHunterAPI:
@@ -100,7 +80,7 @@ class HeadHunterAPI:
             self.last_name = data['last_name']
             self.email = data['email']
 
-    async def get_resume(self, resume_id: ResumeID) -> HeadHunterResume:
+    async def get_resume(self, resume_id: bot.models.ResumeID) -> bot.models.HeadHunterResume:
         """
 
         :param resume_id:
@@ -111,15 +91,15 @@ class HeadHunterAPI:
                 raise HeadHunterAuthError
             data = await resp.json()
 
-            return HeadHunterResume(
-                id=data['id'],
+            return bot.models.HeadHunterResume(
+                resume_id=data['id'],
                 title=data['title'],
                 status=data['status']['id'],
                 access=data['access']['type']['id'],
                 next_publish_at=dateutil.parser.parse(data['next_publish_at'])
             )
 
-    async def get_resume_list(self) -> List[HeadHunterResume]:
+    async def get_resume_list(self) -> List[bot.models.HeadHunterResume]:
         """Метод, возвращающий список резюме пользователя API.
 
         См. https://github.com/hhru/api/blob/master/docs/resumes.md#mine
@@ -137,7 +117,7 @@ class HeadHunterAPI:
                 for item in data['items']
             ]
 
-    async def touch_resume(self, resume: HeadHunterResume) -> Tuple[bool, HeadHunterResume]:
+    async def touch_resume(self, resume: bot.models.HeadHunterResume) -> Tuple[bool, bot.models.HeadHunterResume]:
         """Метод, обновляющий время на указанном резюме.
 
         См. https://github.com/hhru/api/blob/master/docs/resumes.md#publish
