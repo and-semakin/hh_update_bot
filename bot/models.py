@@ -1,4 +1,4 @@
-from typing import Dict, List, NamedTuple, Optional, Any
+from typing import List, NamedTuple, Optional
 from datetime import datetime, timedelta
 import bot
 
@@ -9,7 +9,7 @@ UserID = int
 """Идентификатор пользователя Telegram."""
 
 
-class HeadHunterResume(NamedTuple):
+class HeadHunterResume:
     """Резюме на hh.ru."""
 
     resume_id: ResumeID
@@ -35,6 +35,26 @@ class HeadHunterResume(NamedTuple):
 
     until: datetime = None
     """До какого срока активно резюме."""
+
+    def __init__(
+            self,
+            resume_id: ResumeID,
+            title: str,
+            status: str,
+            next_publish_at: datetime,
+            access: str,
+            user_id: UserID=None,
+            is_active: bool=False,
+            until: datetime=None
+    ):
+        self.resume_id = resume_id
+        self.title = title
+        self.status = status
+        self.next_publish_at = next_publish_at
+        self.access = access
+        self.user_id = user_id
+        self.is_active = is_active
+        self.until = until
 
     def as_dict(self):
         return dict(
@@ -110,7 +130,7 @@ class HeadHunterResume(NamedTuple):
     async def get(resume_id: ResumeID) -> Optional['HeadHunterResume']:
         async with bot.pg_pool.acquire() as conn:
             async with conn.cursor() as cur:
-                bot.log.info(f'Models: Getting resume with id {self.resume_id}...')
+                bot.log.info(f'Models: Getting resume with id {resume_id}...')
                 await cur.execute(
                     """
                     SELECT
@@ -184,6 +204,7 @@ class HeadHunterResume(NamedTuple):
                     WHERE resume_id=%(resume_id)s;
                     
                     INSERT INTO
+                        public.resume
                         (resume_id, title, status, next_publish_at, access, user_id, is_active, until)
                         SELECT
                             %(resume_id)s,
@@ -210,16 +231,16 @@ class HeadHunterResume(NamedTuple):
         bot.log.info(f'Models: Activating resume with id {self.resume_id}...')
         self.is_active = True
         self.until = datetime.now() + timedelta(days=7)
-        self.upsert()
+        await self.upsert()
 
     async def deactivate(self) -> None:
         bot.log.info(f'Models: Deactivating resume with id {self.resume_id}...')
         self.is_active = False
-        self.update()
+        await self.update()
 
     @staticmethod
-    async def get_active_resume_list(user: Dict[str, Any]) -> List['HeadHunterResume']:
-        assert 'user_id' in user
+    async def get_active_resume_list(user: 'TelegramUser') -> List['HeadHunterResume']:
+        assert user.user_id
 
         async with bot.pg_pool.acquire() as conn:
             async with conn.cursor() as cur:
@@ -241,7 +262,7 @@ class HeadHunterResume(NamedTuple):
                         is_active;
                     """,
                     {
-                        'user_id': user['user_id']
+                        'user_id': user.user_id
                     }
                 )
 
@@ -259,3 +280,155 @@ class HeadHunterResume(NamedTuple):
                     )
                     for r in resumes
                 ]
+
+
+class TelegramUser:
+    """Пользователь бота в Telegram."""
+
+    user_id: UserID
+    """Идентификатор пользователя в Telegram."""
+
+    hh_token: str = None
+    """Токен для доступа к API hh.ru."""
+
+    first_name: str = None
+    """Имя пользователя (берется из данных пользователя на hh.ru)."""
+
+    last_name: str = None
+    """Фамилия пользователя (берется из данных пользователя на hh.ru)."""
+
+    email: str = None
+    """Адрес электронной почты (берется из данных пользователя на hh.ru)."""
+
+    is_waiting_for_token: bool = True
+    """Состояние: ожидается ли от пользователя токен в следующем сообщении."""
+
+    def __init__(
+            self,
+            user_id: UserID,
+            hh_token: str=None,
+            first_name: str=None,
+            last_name: str=None,
+            email: str=None,
+            is_waiting_for_token: bool=True
+    ):
+        self.user_id = user_id
+        self.hh_token = hh_token
+        self.first_name = first_name
+        self.last_name = last_name
+        self.email = email
+        self.is_waiting_for_token = is_waiting_for_token
+
+    def as_dict(self):
+        return dict(
+            user_id=self.user_id,
+            hh_token=self.hh_token,
+            first_name=self.first_name,
+            last_name=self.last_name,
+            email=self.email,
+            is_waiting_for_token=self.is_waiting_for_token
+        )
+
+    @staticmethod
+    async def create_table() -> None:
+        """Метод для создания таблицы в БД."""
+        async with bot.pg_pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                bot.log.info("Models: Creating table 'public.user'...")
+                await cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS public."user"
+                    (
+                        user_id bigint NOT NULL,
+                        hh_token character varying(64) COLLATE pg_catalog."default",
+                        first_name character varying(64) COLLATE pg_catalog."default",
+                        last_name character varying(64) COLLATE pg_catalog."default",
+                        email character varying(64) COLLATE pg_catalog."default",
+                        is_waiting_for_token boolean NOT NULL DEFAULT true,
+                        CONSTRAINT user_pkey PRIMARY KEY (user_id)
+                    )
+                    WITH (
+                        OIDS = FALSE
+                    )
+                    TABLESPACE pg_default;
+
+                    ALTER TABLE public."user"
+                        OWNER to postgres;
+                    """
+                )
+
+    async def create(self) -> None:
+        async with bot.pg_pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                bot.log.info(f'Models: Creating user with id {self.user_id}...')
+                await cur.execute(
+                    """
+                    INSERT INTO
+                        public.user
+                        (user_id, hh_token, first_name, last_name, email, is_waiting_for_token)
+                    VALUES
+                    (
+                        %(user_id)s,
+                        %(hh_token)s,
+                        %(first_name)s,
+                        %(last_name)s,
+                        %(email)s,
+                        %(is_waiting_for_token)s
+                    );
+                    """,
+                    self.as_dict()
+                )
+
+    @staticmethod
+    async def get(user_id: UserID) -> Optional['TelegramUser']:
+        async with bot.pg_pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                bot.log.info(f'Models: Getting user with id {user_id}...')
+                await cur.execute(
+                    """
+                    SELECT
+                        user_id,
+                        hh_token,
+                        first_name,
+                        last_name,
+                        email,
+                        is_waiting_for_token
+                    FROM
+                        public.user
+                    WHERE
+                        user_id = %(user_id)s;
+                    """,
+                    {'user_id': user_id}
+                )
+                user = await cur.fetchone()
+                if not user:
+                    return None
+                return TelegramUser(
+                    user_id=user[0],
+                    hh_token=user[1],
+                    first_name=user[2],
+                    last_name=user[3],
+                    email=user[4],
+                    is_waiting_for_token=user[5]
+                )
+
+    async def update(self) -> None:
+        async with bot.pg_pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                bot.log.info(f"Models: Updating user with id {self.user_id}...")
+
+                await cur.execute(
+                    """
+                    UPDATE
+                        public.user
+                    SET
+                        hh_token=%(hh_token)s,
+                        first_name=%(first_name)s,
+                        last_name=%(last_name)s,
+                        email=%(email)s,
+                        is_waiting_for_token=%(is_waiting_for_token)s
+                    WHERE
+                        user_id=%(user_id)s;
+                    """,
+                    self.as_dict()
+                )

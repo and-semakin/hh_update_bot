@@ -74,6 +74,8 @@ resume_selected_message = ('Ок, резюме <b>"{title}"</b> будет ре�
                            'течение одной недели. Через неделю тебе нужно будет написать мне, '
                            'чтобы продолжить поднимать резюме. Я предупрежу тебя. Желаю найти работу мечты!')
 active_resumes_message = 'Продвигаемые резюме:\n\n'
+resume_not_found_message = 'Резюме не найдено.'
+resume_deactivated_message = 'Резюме больше не будет подниматься в поиске.'
 
 
 async def send_message(chat_id, message):
@@ -99,12 +101,15 @@ async def on_chat_message(msg):
         return await on_unknown_message(user_id)
 
     # check if user is new
-    user = await get_user(int(user_id))
+    user = await bot.models.TelegramUser.get(int(user_id))
 
     # unknown user
     if not user:
         log.info(f'Unknown user: {user_id}')
-        await create_user(int(user_id))
+        user = bot.models.TelegramUser(
+            user_id=int(user_id)
+        )
+        await user.create()
         await send_message(user_id, hello_message)
         return
 
@@ -119,13 +124,13 @@ async def on_chat_message(msg):
         await send_message(user_id, help_message)
     elif command == '/token':
         # wait for token
-        user['is_waiting_for_token'] = True
-        await update_user(user)
+        user.is_waiting_for_token = True
+        await user.update()
         await send_message(user_id, new_token_message)
     elif command == '/cancel':
         # cancel waiting for token
-        user['is_waiting_for_token'] = False
-        await update_user(user)
+        user.is_waiting_for_token = False
+        await user.update()
         await send_message(user_id, new_token_cancel_message)
     elif command == '/resumes':
         await get_resume_list(user)
@@ -134,85 +139,22 @@ async def on_chat_message(msg):
     elif command.startswith('/resume_'):
         resume_id = command.split('_')[1]
         await activate_resume(user, resume_id)
-    elif user['is_waiting_for_token']:
+    elif command.startswith('/deactivate_'):
+        resume_id = command.split('_')[1]
+        await deactivate_resume(user, resume_id)
+    elif user.is_waiting_for_token:
         token = msg['text'].upper()
         await save_token(user, token)
     else:
         await on_unknown_message(user_id)
 
 
-async def get_user(user_id: int) -> Optional[Dict[str, Any]]:
-    async with pg_pool.acquire() as conn:
-        async with conn.cursor() as cur:
-            log.info(f'Getting user with id {user_id}...')
-            await cur.execute(
-                """
-                SELECT * FROM public.user WHERE user_id = %(user_id)s;
-                """,
-                {'user_id': user_id}
-            )
-            user = await cur.fetchone()
-            if not user:
-                return None
-            return {
-                'user_id': user[0],
-                'hh_token': user[1],
-                'first_name': user[2],
-                'last_name': user[3],
-                'email': user[4],
-                'is_waiting_for_token': user[5]
-            }
+async def activate_resume(user: bot.models.TelegramUser, resume_id: str) -> None:
+    assert user.user_id
+    assert user.hh_token
 
-
-async def create_user(user_id: int) -> None:
-    async with pg_pool.acquire() as conn:
-        async with conn.cursor() as cur:
-            log.info(f'Creating user with id {user_id}...')
-            await cur.execute(
-                """
-                INSERT INTO public.user (user_id) VALUES (%(user_id)s);
-                """,
-                {'user_id': user_id}
-            )
-
-
-async def update_user(user: Dict[str, Any]) -> None:
-    assert 'user_id' in user
-    assert 'hh_token' in user
-    assert 'first_name' in user
-    assert 'last_name' in user
-    assert 'email' in user
-    assert 'is_waiting_for_token' in user
-
-    async with pg_pool.acquire() as conn:
-        async with conn.cursor() as cur:
-            log.info(f"Updating user with id {user['user_id']}...")
-
-            await cur.execute(
-                """
-                UPDATE
-                    public.user
-                SET
-                    hh_token=%(hh_token)s,
-                    first_name=%(first_name)s,
-                    last_name=%(last_name)s,
-                    email=%(email)s,
-                    is_waiting_for_token=%(is_waiting_for_token)s
-                WHERE
-                    user_id=%(user_id)s;
-                """,
-                {
-                    **user
-                }
-            )
-
-
-async def activate_resume(user: Dict[str, Any], resume_id: str) -> None:
-    assert 'user_id' in user
-    assert 'hh_token' in user
-
-    user_id = user['user_id']
-    hh_token = user['hh_token']
+    user_id = user.user_id
+    hh_token = user.hh_token
 
     resume: bot.models.HeadHunterResume
 
@@ -229,23 +171,40 @@ async def activate_resume(user: Dict[str, Any], resume_id: str) -> None:
     await send_message(user_id, resume_selected_message.format(title=resume.title))
 
 
-async def get_active_resume_list(user: Dict[str, Any]) -> None:
-    assert 'user_id' in user
+async def deactivate_resume(user: bot.models.TelegramUser, resume_id: str) -> None:
+    assert user.user_id
 
-    user_id = user['user_id']
+    user_id = user.user_id
+
+    resume: bot.models.HeadHunterResume = await bot.models.HeadHunterResume.get(resume_id)
+
+    if resume:
+        await resume.deactivate()
+        await send_message(user_id, resume_deactivated_message)
+    else:
+        await send_message(user_id, resume_not_found_message)
+
+
+async def get_active_resume_list(user: bot.models.TelegramUser) -> None:
+    assert user.user_id
+
+    user_id = user.user_id
 
     active_resumes = await bot.models.HeadHunterResume.get_active_resume_list(user)
 
     msg = active_resumes_message
-    msg += '\n\n'.join(f'<b>{r.title}</b>\n/deactivate_{r.resume_id}' for r in active_resumes)
+    if active_resumes:
+        msg += '\n\n'.join(f'<b>{r.title}</b>\n/deactivate_{r.resume_id}' for r in active_resumes)
+    else:
+        msg += '<b>Список пуст!</b>'
 
     await send_message(user_id, msg)
 
 
-async def save_token(user: Dict[str, Any], hh_token: str) -> None:
-    assert 'user_id' in user
+async def save_token(user: bot.models.TelegramUser, hh_token: str) -> None:
+    assert user.user_id
 
-    user_id = user['user_id']
+    user_id = user.user_id
 
     if not token_pattern.match(hh_token):
         # token mismatched pattern
@@ -259,12 +218,12 @@ async def save_token(user: Dict[str, Any], hh_token: str) -> None:
     try:
         async with await HeadHunterAPI.create(hh_token) as api:
             # update user object
-            user['hh_token'] = hh_token
-            user['is_waiting_for_token'] = False
-            user['first_name'] = api.first_name
-            user['last_name'] = api.last_name
-            user['email'] = api.email
-            await update_user(user)
+            user.hh_token = hh_token
+            user.is_waiting_for_token = False
+            user.first_name = api.first_name
+            user.last_name = api.last_name
+            user.email = api.email
+            await user.update()
     except HeadHunterAuthError:
         await send_message(user_id, token_incorrect_message)
         return
@@ -272,12 +231,12 @@ async def save_token(user: Dict[str, Any], hh_token: str) -> None:
     await get_resume_list(user)
 
 
-async def get_resume_list(user: Dict[str, Any]) -> None:
-    assert 'user_id' in user
-    assert 'hh_token' in user
+async def get_resume_list(user: bot.models.TelegramUser) -> None:
+    assert user.user_id
+    assert user.hh_token
 
-    user_id = user['user_id']
-    hh_token = user['hh_token']
+    user_id = user.user_id
+    hh_token = user.hh_token
 
     log.info(f'Get resume list for user: {user_id}, token: {hh_token}')
 
@@ -317,30 +276,7 @@ async def postgres_connect() -> None:
 
 
 async def postgres_create_tables() -> None:
-    async with pg_pool.acquire() as conn:
-        async with conn.cursor() as cur:
-            log.info("Creating table 'public.user'...")
-            await cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS public."user"
-                (
-                    user_id bigint NOT NULL,
-                    hh_token character varying(64) COLLATE pg_catalog."default",
-                    first_name character varying(64) COLLATE pg_catalog."default",
-                    last_name character varying(64) COLLATE pg_catalog."default",
-                    email character varying(64) COLLATE pg_catalog."default",
-                    is_waiting_for_token boolean NOT NULL DEFAULT true,
-                    CONSTRAINT user_pkey PRIMARY KEY (user_id)
-                )
-                WITH (
-                    OIDS = FALSE
-                )
-                TABLESPACE pg_default;
-                
-                ALTER TABLE public."user"
-                    OWNER to postgres;
-                """
-            )
+    await bot.models.TelegramUser.create_table()
     await bot.models.HeadHunterResume.create_table()
 
 
