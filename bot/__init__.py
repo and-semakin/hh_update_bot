@@ -190,7 +190,7 @@ async def get_active_resume_list(user: bot.models.TelegramUser) -> None:
 
     user_id = user.user_id
 
-    active_resumes = await bot.models.HeadHunterResume.get_active_resume_list(user)
+    active_resumes = await bot.models.HeadHunterResume.get_user_active_resume_list(user)
 
     msg = active_resumes_message
     if active_resumes:

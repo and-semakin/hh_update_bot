@@ -1,7 +1,13 @@
 import asyncio
-import bot
+import bot.resume_toucher
+import sys
 
 if __name__ == '__main__':
     loop = asyncio.get_event_loop()
-    loop.create_task(bot.main())
+
+    if len(sys.argv) > 1 and sys.argv[1] == 'touch':
+        loop.create_task(bot.resume_toucher.main())
+    else:
+        loop.create_task(bot.main())
+
     loop.run_forever()

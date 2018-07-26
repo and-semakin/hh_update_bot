@@ -1,4 +1,4 @@
-from typing import List, NamedTuple, Optional
+from typing import List, Optional, Dict, Union
 from datetime import datetime, timedelta
 import bot
 
@@ -239,7 +239,7 @@ class HeadHunterResume:
         await self.update()
 
     @staticmethod
-    async def get_active_resume_list(user: 'TelegramUser') -> List['HeadHunterResume']:
+    async def get_user_active_resume_list(user: 'TelegramUser') -> List['HeadHunterResume']:
         assert user.user_id
 
         async with bot.pg_pool.acquire() as conn:
@@ -280,6 +280,57 @@ class HeadHunterResume:
                     )
                     for r in resumes
                 ]
+
+    @staticmethod
+    async def get_active_resume_list() -> Dict[UserID, List[Dict[str, Union['HeadHunterResume', 'TelegramUser']]]]:
+        async with bot.pg_pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                bot.log.info(f'Models: Getting active resume list...')
+                await cur.execute(
+                    """
+                    SELECT
+                        public.resume.resume_id,  -- 0
+                        public.resume.title,      -- 1
+                        public.resume.status,     -- 2
+                        public.resume.next_publish_at,  -- 3
+                        public.resume.access,     -- 4
+                        public.resume.until,      -- 5
+                        public.user.user_id       -- 6
+                        public.user.hh_token      -- 7
+                    FROM
+                        public.resume
+                    JOIN
+                        public.user ON public.user.user_id = public.resume.user_id
+                    WHERE
+                        active;
+                    """
+                )
+
+                resumes_and_users = {}
+
+                for r in await cur.fetchall():
+                    user_id = r[6]
+                    if user_id not in resumes_and_users:
+                        resumes_and_users[user_id] = []
+
+                    resumes_and_users[user_id].append(
+                        {
+                            'resume': HeadHunterResume(
+                                resume_id=r[0],
+                                title=r[1],
+                                status=r[2],
+                                next_publish_at=r[3],
+                                access=r[4],
+                                until=r[5]
+                            ),
+                            'user': TelegramUser(
+                                user_id=user_id,
+                                hh_token=r[7]
+                            )
+                        }
+                    )
+
+                return resumes_and_users
 
 
 class TelegramUser:
