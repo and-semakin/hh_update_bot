@@ -109,7 +109,7 @@ async def on_chat_message(msg):
         user = bot.models.TelegramUser(
             user_id=int(user_id)
         )
-        await user.create()
+        await user.create(pg_pool)
         await send_message(user_id, hello_message)
         return
 
@@ -125,12 +125,12 @@ async def on_chat_message(msg):
     elif command == '/token':
         # wait for token
         user.is_waiting_for_token = True
-        await user.update()
+        await user.update(pg_pool)
         await send_message(user_id, new_token_message)
     elif command == '/cancel':
         # cancel waiting for token
         user.is_waiting_for_token = False
-        await user.update()
+        await user.update(pg_pool)
         await send_message(user_id, new_token_cancel_message)
     elif command == '/resumes':
         await get_resume_list(user)
@@ -167,7 +167,7 @@ async def activate_resume(user: bot.models.TelegramUser, resume_id: str) -> None
     # set user_id
     resume.user_id = user_id
 
-    await resume.activate()
+    await resume.activate(pg_pool)
     await send_message(user_id, resume_selected_message.format(title=resume.title))
 
 
@@ -176,7 +176,7 @@ async def deactivate_resume(user: bot.models.TelegramUser, resume_id: str) -> No
 
     user_id = user.user_id
 
-    resume: bot.models.HeadHunterResume = await bot.models.HeadHunterResume.get(resume_id)
+    resume: bot.models.HeadHunterResume = await bot.models.HeadHunterResume.get(pg_pool, resume_id)
 
     if resume:
         await resume.deactivate()
@@ -223,7 +223,7 @@ async def save_token(user: bot.models.TelegramUser, hh_token: str) -> None:
             user.first_name = api.first_name
             user.last_name = api.last_name
             user.email = api.email
-            await user.update()
+            await user.update(pg_pool)
     except HeadHunterAuthError:
         await send_message(user_id, token_incorrect_message)
         return
@@ -276,8 +276,8 @@ async def postgres_connect() -> None:
 
 
 async def postgres_create_tables() -> None:
-    await bot.models.TelegramUser.create_table()
-    await bot.models.HeadHunterResume.create_table()
+    await bot.models.TelegramUser.create_table(pg_pool)
+    await bot.models.HeadHunterResume.create_table(pg_pool)
 
 
 async def main():

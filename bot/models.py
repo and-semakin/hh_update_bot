@@ -69,8 +69,8 @@ class HeadHunterResume:
         )
 
     @staticmethod
-    async def create_table() -> None:
-        async with bot.pg_pool.acquire() as conn:
+    async def create_table(pool) -> None:
+        async with pool.acquire() as conn:
             async with conn.cursor() as cur:
                 bot.log.info("Models: Creating table 'public.resume'...")
                 await cur.execute(
@@ -101,8 +101,8 @@ class HeadHunterResume:
                     """
                 )
 
-    async def create(self) -> None:
-        async with bot.pg_pool.acquire() as conn:
+    async def create(self, pool) -> None:
+        async with pool.acquire() as conn:
             async with conn.cursor() as cur:
                 bot.log.info(f"Models: Inserting resume {self.resume_id}...")
 
@@ -127,8 +127,8 @@ class HeadHunterResume:
                 )
 
     @staticmethod
-    async def get(resume_id: ResumeID) -> Optional['HeadHunterResume']:
-        async with bot.pg_pool.acquire() as conn:
+    async def get(pool, resume_id: ResumeID) -> Optional['HeadHunterResume']:
+        async with pool.acquire() as conn:
             async with conn.cursor() as cur:
                 bot.log.info(f'Models: Getting resume with id {resume_id}...')
                 await cur.execute(
@@ -163,8 +163,8 @@ class HeadHunterResume:
                     until=resume[7]
                 )
 
-    async def update(self) -> None:
-        async with bot.pg_pool.acquire() as conn:
+    async def update(self, pool) -> None:
+        async with pool.acquire() as conn:
             async with conn.cursor() as cur:
                 bot.log.info(f'Models: Updating resume with id {self.resume_id}...')
                 await cur.execute(
@@ -185,8 +185,8 @@ class HeadHunterResume:
                     self.as_dict()
                 )
 
-    async def upsert(self) -> None:
-        async with bot.pg_pool.acquire() as conn:
+    async def upsert(self, pool) -> None:
+        async with pool.acquire() as conn:
             async with conn.cursor() as cur:
                 bot.log.info(f'Models: Inserting or updating resume with id {self.resume_id}...')
                 await cur.execute(
@@ -227,22 +227,22 @@ class HeadHunterResume:
                     self.as_dict()
                 )
 
-    async def activate(self) -> None:
+    async def activate(self, pool) -> None:
         bot.log.info(f'Models: Activating resume with id {self.resume_id}...')
         self.is_active = True
         self.until = datetime.now() + timedelta(days=7)
-        await self.upsert()
+        await self.upsert(pool)
 
-    async def deactivate(self) -> None:
+    async def deactivate(self, pool) -> None:
         bot.log.info(f'Models: Deactivating resume with id {self.resume_id}...')
         self.is_active = False
-        await self.update()
+        await self.update(pool)
 
     @staticmethod
-    async def get_user_active_resume_list(user: 'TelegramUser') -> List['HeadHunterResume']:
+    async def get_user_active_resume_list(pool, user: 'TelegramUser') -> List['HeadHunterResume']:
         assert user.user_id
 
-        async with bot.pg_pool.acquire() as conn:
+        async with pool.acquire() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
                     """
@@ -282,8 +282,8 @@ class HeadHunterResume:
                 ]
 
     @staticmethod
-    async def get_active_resume_list() -> Dict[UserID, List[Dict[str, Union['HeadHunterResume', 'TelegramUser']]]]:
-        async with bot.pg_pool.acquire() as conn:
+    async def get_active_resume_list(pool) -> Dict[UserID, List[Dict[str, Union['HeadHunterResume', 'TelegramUser']]]]:
+        async with pool.acquire() as conn:
             async with conn.cursor() as cur:
                 bot.log.info(f'Models: Getting active resume list...')
                 await cur.execute(
@@ -381,9 +381,9 @@ class TelegramUser:
         )
 
     @staticmethod
-    async def create_table() -> None:
+    async def create_table(pool) -> None:
         """Метод для создания таблицы в БД."""
-        async with bot.pg_pool.acquire() as conn:
+        async with pool.acquire() as conn:
             async with conn.cursor() as cur:
                 bot.log.info("Models: Creating table 'public.user'...")
                 await cur.execute(
@@ -408,8 +408,8 @@ class TelegramUser:
                     """
                 )
 
-    async def create(self) -> None:
-        async with bot.pg_pool.acquire() as conn:
+    async def create(self, pool) -> None:
+        async with pool.acquire() as conn:
             async with conn.cursor() as cur:
                 bot.log.info(f'Models: Creating user with id {self.user_id}...')
                 await cur.execute(
@@ -431,8 +431,8 @@ class TelegramUser:
                 )
 
     @staticmethod
-    async def get(user_id: UserID) -> Optional['TelegramUser']:
-        async with bot.pg_pool.acquire() as conn:
+    async def get(pool, user_id: UserID) -> Optional['TelegramUser']:
+        async with pool.acquire() as conn:
             async with conn.cursor() as cur:
                 bot.log.info(f'Models: Getting user with id {user_id}...')
                 await cur.execute(
@@ -463,8 +463,8 @@ class TelegramUser:
                     is_waiting_for_token=user[5]
                 )
 
-    async def update(self) -> None:
-        async with bot.pg_pool.acquire() as conn:
+    async def update(self, pool) -> None:
+        async with pool.acquire() as conn:
             async with conn.cursor() as cur:
                 bot.log.info(f"Models: Updating user with id {self.user_id}...")
 

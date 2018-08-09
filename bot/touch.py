@@ -21,7 +21,7 @@ resume_timed_out_message = 'Продвижение твоего резюме б�
 
 
 async def touch_ready_resumes() -> None:
-    resumes_and_users = await HeadHunterResume.get_active_resume_list()
+    resumes_and_users = await HeadHunterResume.get_active_resume_list(pg_pool)
 
     for user_id, user_resumes in resumes_and_users.items():
         for r in user_resumes:
@@ -33,7 +33,7 @@ async def touch_ready_resumes() -> None:
                     if resume.until < datetime.datetime.now():
                         # notify user and deactivate resume
                         await bot.send_message(user.user_id, resume_timed_out_message)
-                        await resume.deactivate()
+                        await resume.deactivate(pg_pool)
                     try:
                         has_updated, resume = await api.touch_resume(resume)
                         if has_updated:
@@ -52,5 +52,7 @@ async def main():
     loop = asyncio.get_event_loop()
 
     log.info('Updating resumes in HH...')
-    loop.create_task(bot.postgres_connect())
-    loop.create_task(touch_ready_resumes())
+    asyncio.run(bot.postgres_connect())
+    print('pg_pool', pg_pool, type(pg_pool))
+    print('bot.pg_pool', bot.pg_pool, type(bot.pg_pool))
+    asyncio.run(touch_ready_resumes())
